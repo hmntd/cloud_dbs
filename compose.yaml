@@ -1,0 +1,114 @@
+services:
+    laravel.test:
+        build:
+            context: './docker/8.5'
+            dockerfile: Dockerfile
+            args:
+                WWWGROUP: '${WWWGROUP}'
+        image: 'sail-8.5/app'
+        extra_hosts:
+            - 'host.docker.internal:host-gateway'
+        ports:
+            - '${APP_PORT:-80}:80'
+            - '${VITE_PORT:-5173}:${VITE_PORT:-5173}'
+        environment:
+            WWWUSER: '${WWWUSER}'
+            LARAVEL_SAIL: 1
+            XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
+            XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
+            IGNITION_LOCAL_SITES_PATH: '${PWD}'
+        volumes:
+            - '.:/var/www/html'
+        networks:
+            - sail
+        depends_on:
+            - mongodb
+            - redis
+            - neo4j
+            - cassandra
+    mongodb:
+        image: 'mongodb/mongodb-atlas-local:latest'
+        environment:
+            - 'MONGODB_INITDB_ROOT_USERNAME=${MONGODB_USERNAME:-}'
+            - 'MONGODB_INITDB_ROOT_PASSWORD=${MONGODB_PASSWORD:-}'
+        volumes:
+            - 'sail-mongodb:/data/db'
+            - 'sail-mongodb-config:/data/configdb'
+        ports:
+            - '${FORWARD_MONGODB_PORT:-27017}:27017'
+        networks:
+            - sail
+    redis:
+        image: 'redis:alpine'
+        ports:
+            - '${FORWARD_REDIS_PORT:-6379}:6379'
+        volumes:
+            - 'sail-redis:/data'
+        networks:
+            - sail
+        healthcheck:
+            test:
+                - CMD
+                - redis-cli
+                - ping
+            retries: 3
+            timeout: 5s
+    neo4j:
+        image: 'neo4j:5'
+        ports:
+            - '${FORWARD_NEO4J_HTTP_PORT:-7474}:7474'
+            - '${FORWARD_NEO4J_BOLT_PORT:-7687}:7687'
+        environment:
+            NEO4J_AUTH: '${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-password}'
+        volumes:
+            - 'sail-neo4j-data:/data'
+            - 'sail-neo4j-logs:/logs'
+        networks:
+            - sail
+        healthcheck:
+            test:
+                - CMD-SHELL
+                - 'wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1'
+            interval: 10s
+            timeout: 5s
+            retries: 10
+    cassandra:
+        image: 'cassandra:5.0'
+        ports:
+            - '${FORWARD_CASSANDRA_PORT:-9042}:9042'
+        environment:
+            CASSANDRA_CLUSTER_NAME: '${CASSANDRA_CLUSTER_NAME:-laravel-cluster}'
+            CASSANDRA_DC: '${CASSANDRA_DC:-datacenter1}'
+            CASSANDRA_RACK: '${CASSANDRA_RACK:-rack1}'
+            CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+            MAX_HEAP_SIZE: '${CASSANDRA_MAX_HEAP_SIZE:-512M}'
+            HEAP_NEWSIZE: '${CASSANDRA_HEAP_NEWSIZE:-100M}'
+        volumes:
+            - 'sail-cassandra:/var/lib/cassandra'
+        networks:
+            - sail
+        healthcheck:
+            test:
+                - CMD-SHELL
+                - 'cqlsh -e "describe cluster" || exit 1'
+            interval: 15s
+            timeout: 10s
+            retries: 20
+            start_period: 30s
+networks:
+    sail:
+        driver: bridge
+volumes:
+    sail-mongodb:
+        driver: local
+    sail-redis:
+        driver: local
+    sail-mongodb-config:
+        driver: local
+    sail-neo4j-data:
+        driver: local
+    sail-neo4j-logs:
+        driver: local
+    sail-cassandra:
+        driver: local
+
