@@ -1,58 +1,65 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Social Network Polyglot Persistence
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A social network data storage application built with **Laravel 13**, **PHP 8.5**, **Vue 3**, **PrimeVue**, and **Tailwind CSS**. It demonstrates a polyglot persistence architecture utilizing four distinct database paradigms (MongoDB, Redis, Neo4j, and Cassandra) in a single integrated platform.
 
-## About Laravel
+---
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Database Implementations
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+### 1. MongoDB (Document Store)
+* **Purpose**: Core entity storage with hierarchical subdocuments and embedded arrays.
+* **Collections & Schema**:
+  * `social_users`: Stores user identity with an embedded `profile` document (`bio`, `location`, `website`) and an `interests` array of tags.
+  * `social_posts`: Stores posts with an embedded `author` object (`id`, `username`, `full_name`, `location`), a `tags` array, and an embedded array of `comments` subdocuments (`id`, `author`, `content`, `created_at`).
+* **Operations**:
+  * **Embedded Comments**: Appends comments directly into the post document via atomic `$push` and increments comment count with `$inc`, enabling single-document reads for feed rendering.
+  * **Search by Author & Date**: Filters posts by `author.id`, BSON `UTCDateTime` date ranges (`$gte`, `$lte`), and exact tag matching.
+  * **Most-Liked Users Aggregation**: Runs a native aggregation pipeline (`$group` by `$author.id` summing `likes_count` and counting posts, sorted by `total_likes DESC`) to calculate author popularity rankings.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+### 2. Redis (In-Memory Data Structures)
+* **Purpose**: Sub-millisecond atomic counters, real-time rankings, and expiring presence tracking.
+* **Keys & Data Structures**:
+  * **Popularity Leaderboard (`ZSET`)**: Maintained at `social:posts:popularity`. Whenever a post receives a like, view, or comment, its composite score is computed:
+    $$\text{Score} = (\text{likes} \times 3) + (\text{comments} \times 2) + (\text{views} \times 1)$$
+    The top 10 most popular posts are fetched in $O(\log(N) + M)$ using `ZREVRANGE`.
+  * **Atomic Counters**: Dedicated keys for post metrics (`social:post:{id}:likes`, `social:post:{id}:views`, `social:post:{id}:comments`) modified via `INCR`, along with unique like tracking via Sets (`SADD social:post:{id}:liked_by`).
+  * **Active User Sessions**: Stored in `social:active_user:{userId}` with a Time-To-Live (TTL) using `SETEX` and indexed in `social:active_users:ids` for real-time presence monitoring.
 
-## Learning Laravel
+### 3. Neo4j (Graph Database)
+* **Purpose**: Complex social relationship mapping, mutual connection analysis, and recommendation traversals.
+* **Graph Structure**:
+  * **Nodes**: `(:User {id, username, full_name})`
+  * **Relationships**: `(:User)-[:FOLLOWS {created_at}]->(:User)`
+* **Cypher Queries**:
+  * **Mutual Friends**: Identifies users mutually followed by two separate accounts:
+    ```cypher
+    MATCH (a:User {id: $userAId})-[:FOLLOWS]->(mutual:User)<-[:FOLLOWS]-(b:User {id: $userBId})
+    WHERE mutual.id <> $userAId AND mutual.id <> $userBId
+    RETURN DISTINCT mutual.id AS id, mutual.username AS username, mutual.full_name AS full_name
+    ```
+  * **Subscription Recommendations**: Traverses 2-hop friend-of-friend paths to suggest accounts followed by an account's followed users, ranked by shared connection count:
+    ```cypher
+    MATCH (u:User {id: $userId})-[:FOLLOWS]->(friend:User)-[:FOLLOWS]->(rec:User)
+    WHERE rec.id <> $userId AND NOT (u)-[:FOLLOWS]->(rec)
+    RETURN rec.id AS id, rec.username AS username, rec.full_name AS full_name,
+           count(DISTINCT friend) AS mutual_count,
+           collect(DISTINCT friend.username) AS followed_by
+    ORDER BY mutual_count DESC
+    LIMIT 10
+    ```
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+### 4. Cassandra (Wide-Column / Time-Series Store)
+* **Purpose**: High-throughput, write-heavy, immutable chronological event logging.
+* **Tables & Partitioning**:
+  * `user_activity_events`:
+    * **Partition Key**: `((user_id))` ensures all events for a given user reside sequentially on the same cluster node.
+    * **Clustering Key**: `occurred_at DESC, event_id ASC` keeps events pre-sorted chronologically on disk for efficient sequential disk reads.
+    * **Queries**: Slices activity history for a specific user over an arbitrary date range (`occurred_at >= ? AND occurred_at <= ?`) or fetches the user's last 20 events.
+  * `global_activity_events`:
+    * **Partition Key**: `((bucket))` (e.g. `'all'`) with clustering `occurred_at DESC, event_id ASC` to retrieve the latest 20 global network events without distributed scans.
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
-```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
-```
-
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
-
-## Contributing
-
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Code of Conduct
-
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+---
 
 ## License
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+This project is open-sourced software licensed under the [MIT license](LICENSE) by **Ruslan Bazavluk**.
